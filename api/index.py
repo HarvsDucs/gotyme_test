@@ -1,9 +1,13 @@
+from flask import Flask, request, jsonify
 import ollama
 from pydantic import BaseModel, Field
 from typing import List, Literal
 
+app = Flask(__name__)
+
 class TimeSlot(BaseModel):
     day: Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    # ge means greater than or equal, le means less than or equal
     hour: int = Field(ge=9, le=16)
 
 class UserInput(BaseModel):
@@ -40,7 +44,7 @@ def find_best_times(users_data: list[UserInput]):
 
     # Initializing the first user before schedule intersection
     first_user = users_data[0]
-    print(f"First User: {first_user}")
+    # print(f"First User: {first_user}")
     common_slots = set()
     for slot in first_user.available_slots:
         common_slots.add((slot.day, slot.hour))
@@ -53,18 +57,18 @@ def find_best_times(users_data: list[UserInput]):
             current_user_slots.add((slot.day, slot.hour))
         
         # Debugging: See why intersection might fail
-        print(f"Intersecting with User {i+2}")
+        # print(f"Intersecting with User {i+2}")
         
         # The Math
         common_slots = common_slots.intersection(current_user_slots)
         
         if len(common_slots) == 0:
-            print(f"User {i+2} has no matching times with the group.")
+            # print(f"User {i+2} has no matching times with the group.")
             return []
 
     # Now considering the preferences among common time slots
     ranked_slots = []
-    print(f"Common Slots: {common_slots} before preferences are chosen")
+    # print(f"Common Slots: {common_slots} before preferences are chosen")
     # This multi-nested for loop basically just looks for preferences in the common slots among users. Most preferred slots get highest score.
     # Score is initialized to 0, and added 1 for each user who has a preference for that slot. The score is then used to sort the slots.
     for day, hour in common_slots:
@@ -96,19 +100,19 @@ def find_best_times(users_data: list[UserInput]):
         # TRICK: We multiply by -1.
         #   Real Score: 5 (Best)  -> Sorting Value: -5  (Smallest number, comes first)
         #   Real Score: 0 (Worst) -> Sorting Value: 0   (Largest number, comes last)
-        print(f"Whole slot: {slot}")
+        # print(f"Whole slot: {slot}")
         sort_by_score = slot['score'] * -1
-        print(f"Sort by score: {sort_by_score}")
+        # print(f"Sort by score: {sort_by_score}")
 
         # If scores are tied, we look at this next.
         # Example: Monday (1) is smaller than Tuesday (2), so Monday comes first.
         sort_by_day = day_mapping[slot['day']]
-        print(f"Sort by day: {sort_by_day}")
+        # print(f"Sort by day: {sort_by_day}")
         
         # If Day and Score are tied, we look at this last.
         # Example: 9am (9) is smaller than 10am (10), so 9am comes first.
         sort_by_hour = slot['hour']
-        print(f"Sort by hour: {sort_by_hour}")
+        # print(f"Sort by hour: {sort_by_hour}")
         
         # We return a "tuple" of these three numbers.
         # Python compares the first number... if tied, compares the second... etc.
@@ -116,70 +120,37 @@ def find_best_times(users_data: list[UserInput]):
 
     # Run the sort using our custom logic function
     final_sorted_list = sorted(ranked_slots, key=get_sorting_priorities)
-    print(f"Final sorted list: {final_sorted_list}")
+    # print(f"Final sorted list: {final_sorted_list}")
     
     return final_sorted_list
 
+@app.route('/')
+def home():
+    return 'Scheduling API is running.'
+
+@app.route('/schedule', methods=['POST'])
+def schedule():
+    try:
+        data = request.get_json()
+        if not data or 'messages' not in data:
+            return jsonify({'error': 'Missing "messages" list in request body'}), 400
+        
+        msgs = data['messages']
+        if not isinstance(msgs, list):
+             return jsonify({'error': '"messages" must be a list of strings'}), 400
+
+        users_data = []
+        for i, m in enumerate(msgs):
+            # print(f"Processing User {i+1}...")
+            user_data = get_user_data(m)
+            users_data.append(user_data)
+        
+        results = find_best_times(users_data)
+        return jsonify({'recommended_times': results}), 200
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
-    msgs = [
-        "I am available every morning from 9 to 11 AM, except on Wednesdays.",
-        "I am free on Tuesdays, but if possible, I prefer an early morning slot. Maybe 10am",
-        "I already have a meeting booked on Friday from 2 to 4 PM.",
-        # Adding Additional test messages # 
-    # # 1. Multiple time blocks with day-specific constraints
-    # "I'm available Monday through Thursday between 2-5 PM, but on Wednesdays I can only do 3-4 PM. Fridays I'm completely free after 1 PM.",
-    
-    # # 2. Preference with flexible duration
-    # "I prefer mornings, ideally around 9 or 10 AM. I can do any day except Monday. The meeting should be at least 1 hour but no more than 2 hours.",
-    
-    # # 3. Multiple existing conflicts
-    # "I have meetings on Tuesday 9-10 AM, Wednesday 2-3 PM, and Thursday 11 AM-12 PM. Otherwise I'm free between 9 AM and 5 PM on weekdays.",
-    
-    # # 4. End-of-day preference (edge case: spans across days)
-    # "I work late, so I'm only available after 6 PM on weekdays. Weekends work too, but I'd prefer Saturday morning if possible, like around 10 AM.",
-    
-    # # 5. Lunch hour constraint (common real-world edge case)
-    # "I'm available anytime between 9 AM and 6 PM Monday to Friday, but I need to block out 12-1 PM for lunch every day. Also, no meetings before 10 AM on Mondays please.",
-    
-    # # 6. Vague/ambiguous input (tests parsing robustness)
-    # "I'm pretty flexible next week, but mornings are better for me. I think I have something on Thursday afternoon but I'm not 100% sure. Maybe avoid Thursday just to be safe?",
-    
-    # # 7. Timezone mention (edge case if you want to handle it)
-    # "I'm in PST timezone. I can do Tuesday or Wednesday between 8-11 AM my time. I have a hard stop at 11 because of another commitment.",
-    ]
-
-    users_data = []
-
-    for i, m in enumerate(msgs):
-        print(f"Processing User {i+1}...")
-        # Getting user data from the message, its basically the free slots and preferred slots for each user
-        data = get_user_data(m)
-        # Appending the data to the users_data list
-        users_data.append(data)
-        
-        # Printing the actual data to debug
-        # This will tell you if User 3 is missing days
-        days_found = set()
-        # Loop through every single slot the AI gave us
-        for slot in data.available_slots:
-            # Extract just the day name (e.g., "Monday")
-            current_day = slot.day
-            # Add it to our bucket
-            days_found.add(current_day)
-        
-        print(f"(DEBUG: User {i+1} has {len(data.available_slots)} slots across days: {days_found})")
-
-    print("\nScheduling...")
-    results = find_best_times(users_data)
-
-    print("\nRecommended Meeting Times (Ranked by Preference):")
-    if not results:
-        print("ERROR: No overlapping times found.")
-    else:
-        for res in results:
-            # Calculate stars based on score
-            star = "⭐" * res['score']
-            
-            # Print the raw 24-hour time directly
-            print(f" - {res['day']} at {res['hour']}:00 {star}")
+    app.run(debug=True)
