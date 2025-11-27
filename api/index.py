@@ -1,9 +1,13 @@
 from flask import Flask, request, jsonify
-import ollama
+from openai import OpenAI
 from pydantic import BaseModel, Field
 from typing import List, Literal
+import json
 
 app = Flask(__name__)
+
+# Initialize OpenAI client (requires OPENAI_API_KEY environment variable)
+client = OpenAI()
 
 class TimeSlot(BaseModel):
     day: Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -26,17 +30,24 @@ def get_user_data(user_text: str):
     4. IMPLIED AVAILABILITY: Unless a user explicitly excludes a day, assume they are available 09:00-17:00.
     """
 
-    response = ollama.chat(
-        model='llama3.2',
+    response = client.chat.completions.create(
+        model='gpt-4o-mini',
         messages=[
             {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': user_text}
         ],
-        format=UserInput.model_json_schema(), 
-        options={'temperature': 0} # Set temp to 0 to make it more logical/strict
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "user_input_schema",
+                "schema": UserInput.model_json_schema(),
+                "strict": True
+            }
+        },
+        temperature=0  # Set temp to 0 to make it more logical/strict
     )
 
-    return UserInput.model_validate_json(response['message']['content'])
+    return UserInput.model_validate_json(response.choices[0].message.content)
 
 # This function finds the minimum common slots between users, and also a preferred schedule, through concept of set intersection.
 def find_best_times(users_data: list[UserInput]):
